@@ -56,6 +56,7 @@ class Config:
         self.HTTP_TIMEOUT_SEC = _env_float("HTTP_TIMEOUT_SEC", 10.0)
         self.POLL_INTERVAL_SEC = _env_float("POLL_INTERVAL_SEC", 1.0)
         self.SIGNAL_HISTORY_PATH = _env_str("SIGNAL_HISTORY_PATH", "signal_history.jsonl")
+        self.PENDING_BETS_PATH = _env_str("PENDING_BETS_PATH", "pending_bets.json")
 
         self.BTC_MARKET_ID = _env_str("BTC_MARKET_ID")
         self.SOL_MARKET_ID = _env_str("SOL_MARKET_ID")

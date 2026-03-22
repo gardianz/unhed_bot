@@ -19,7 +19,14 @@ class Strategy:
 
         state = self.state.get_or_create(market.slug)
         metrics = state.frozen_range_metrics or market.range_metrics
-        if metrics is None:
+        if (
+            metrics is None
+            or metrics.average_1 is None
+            or metrics.range_1_low is None
+            or metrics.range_1_high is None
+            or metrics.range_2_low is None
+            or metrics.range_2_high is None
+        ):
             return None
 
         current_price = market.current_price

@@ -4,12 +4,14 @@ Bot ini membaca market aktif BTC, SOL, dan ETH dari API Unhedged, menghitung ran
 
 ## Logic
 
-Bot membagi histori harga menjadi 4 segmen tetap:
+Bot membagi histori harga menjadi 6 segmen tetap:
 
-- seg1: `-21m` sampai `-16m`
-- seg2: `-16m` sampai `-11m`
-- seg3: `-11m` sampai `-6m`
-- seg4: `-6m` sampai `-3m`
+- seg1: `-30m` sampai `-25m`
+- seg2: `-25m` sampai `-20m`
+- seg3: `-20m` sampai `-15m`
+- seg4: `-15m` sampai `-10m`
+- seg5: `-10m` sampai `-5m`
+- seg6: `-5m` sampai `-2m`
 
 Setiap segmen dihitung dari `high - low` pada rentang waktu itu, dengan arah:
 
@@ -19,7 +21,7 @@ Setiap segmen dihitung dari `high - low` pada rentang waktu itu, dengan arah:
 
 Lalu bot menghitung:
 
-- `average_1 = (seg1 + seg2 + seg3 + seg4) / 2`
+- `average_1 = (seg1 + seg2 + seg3 + seg4 + seg5 + seg6) / 2`
 - `average_2 = average_1 / 3`
 
 Range keputusan dibentuk dari `target price` market:
@@ -27,7 +29,7 @@ Range keputusan dibentuk dari `target price` market:
 - `range_1 = target price +- abs(average_1)`
 - `range_2 = target price +- abs(average_2)`
 
-Range ini dibekukan saat masuk masa jeda, jadi tidak berubah lagi di menit keputusan.
+Setiap segmen dibekukan begitu rentangnya lewat, jadi `high`, `low`, dan nilai signed range untuk segmen yang sudah selesai tidak boleh berubah lagi. Range final juga ikut tetap setelah semua 6 segmen selesai.
 
 ## Rule Bet
 
@@ -63,7 +65,7 @@ Tampilan terminal menunjukkan:
 - avg_2
 - range_1
 - range_2
-- segment `m5/m5/m5/m3`
+- segment `seg1..seg6`
 
 ## Konfigurasi
 
@@ -76,6 +78,9 @@ Salin `.env.example` ke `.env`, lalu isi:
 - `POLL_INTERVAL_SEC`
 - `BTC_MARKET_ID`, `SOL_MARKET_ID`, `ETH_MARKET_ID`
 - `BTC_AVG1_MIN`, `SOL_AVG1_MIN`, `ETH_AVG1_MIN`
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` untuk kirim event ke Telegram
+- `TELEGRAM_LOG_LEVEL` untuk warning/error logger ke Telegram
+- `TELEGRAM_PREFIX` untuk header pesan Telegram
 
 Kalau `*_MARKET_ID` dikosongkan, bot akan mencoba auto-discover market aktif dari API.
 

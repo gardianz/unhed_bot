@@ -21,13 +21,13 @@ class SegmentSnapshot:
 
 @dataclass
 class RangeMetrics:
-    segments: tuple[SegmentSnapshot, SegmentSnapshot, SegmentSnapshot, SegmentSnapshot]
-    average_1: float
-    average_2: float
-    range_1_low: float
-    range_1_high: float
-    range_2_low: float
-    range_2_high: float
+    segments: tuple[SegmentSnapshot, ...]
+    average_1: Optional[float]
+    average_2: Optional[float]
+    range_1_low: Optional[float]
+    range_1_high: Optional[float]
+    range_2_low: Optional[float]
+    range_2_high: Optional[float]
 
 
 @dataclass
@@ -41,6 +41,9 @@ class Market:
     current_price: float
     yes_percentage: float
     no_percentage: float
+    total_pool: float
+    yes_pool: float
+    no_pool: float
     thresholds: ThresholdConfig
     range_metrics: Optional[RangeMetrics] = None
     reference_price: Optional[float] = None
@@ -70,8 +73,9 @@ class RoundState:
     triggered_both: bool = False
     triggered_yes: bool = False
     triggered_no: bool = False
+    pending_settlement_logged: bool = False
     frozen_range_metrics: Optional[RangeMetrics] = None
     frozen_segments: list[Optional[SegmentSnapshot]] = field(
-        default_factory=lambda: [None, None, None, None]
+        default_factory=lambda: [None, None, None, None, None, None]
     )
     completed: bool = False

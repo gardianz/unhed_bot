@@ -4,6 +4,7 @@ from dataclasses import asdict
 from typing import Any
 
 from models import RoundState, Signal
+from telegram_notifier import telegram_notifier
 
 
 class BotState:
@@ -11,10 +12,13 @@ class BotState:
         self.rounds: dict[str, RoundState] = {}
         self.recent_activity: list[dict[str, Any]] = []
         self.last_bets: dict[str, str] = {}
+        self.pending_bets_by_market_id: dict[str, str] = {}
+        self.pending_event_details_logged: set[str] = set()
         self.total_bet_cc: float = 0.0
         self.starting_balance: float | None = None
         self.current_balance: float | None = None
         self.events: list[str] = []
+        self.closed_market_ids: dict[str, str] = {}
 
     def get_or_create(self, slug: str) -> RoundState:
         if slug not in self.rounds or self.rounds[slug].completed:
@@ -36,6 +40,18 @@ class BotState:
 
     def get_last_bet(self, market_slug: str) -> str:
         return self.last_bets.get(market_slug, "-")
+
+    def restore_pending_bet(self, market_id: str, bet_summary: str) -> None:
+        self.pending_bets_by_market_id[market_id] = bet_summary
+
+    def get_pending_bet(self, market_id: str) -> str | None:
+        return self.pending_bets_by_market_id.get(market_id)
+
+    def should_log_pending_details(self, market_id: str) -> bool:
+        return market_id not in self.pending_event_details_logged
+
+    def mark_pending_details_logged(self, market_id: str) -> None:
+        self.pending_event_details_logged.add(market_id)
 
     def get_market_status(self, market_slug: str) -> str:
         round_state = self.rounds.get(market_slug)
@@ -70,4 +86,11 @@ class BotState:
 
     def add_event(self, message: str) -> None:
         self.events.append(message)
-        self.events = self.events[-8:]
+        self.events = self.events[-20:]
+        telegram_notifier.send(message)
+
+    def mark_closed_market(self, market_slug: str, market_id: str) -> None:
+        self.closed_market_ids[market_slug] = market_id
+
+    def was_market_closed(self, market_slug: str, market_id: str) -> bool:
+        return self.closed_market_ids.get(market_slug) == market_id

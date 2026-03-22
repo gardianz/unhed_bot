@@ -2,3 +2,4 @@
 __pycache__/
 *.pyc
 signal_history.jsonl
+pending_bets.json

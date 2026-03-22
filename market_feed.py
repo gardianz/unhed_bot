@@ -15,19 +15,24 @@ from models import Market, RangeMetrics, SegmentSnapshot
 
 class MarketFeed:
     SEGMENT_WINDOWS = (
-        ("m5-1", 21, 16),
-        ("m5-2", 16, 11),
-        ("m5-3", 11, 6),
-        ("m3-4", 6, 3),
+        ("seg1", 30, 25),
+        ("seg2", 25, 20),
+        ("seg3", 20, 15),
+        ("seg4", 15, 10),
+        ("seg5", 10, 5),
+        ("seg6", 5, 2),
     )
 
     def __init__(self) -> None:
         self._session = requests.Session()
         self._session.headers.update({"Accept": "application/json"})
         self._market_ids = self._resolve_market_ids()
+        self._waiting_for_markets_logged = False
 
     def refresh_market_ids(self) -> None:
         self._market_ids = self._resolve_market_ids()
+        if self._market_ids:
+            self._waiting_for_markets_logged = False
 
     def drop_market(self, slug: str) -> None:
         self._market_ids.pop(slug, None)
@@ -103,10 +108,10 @@ class MarketFeed:
         raise RuntimeError("Target price could not be determined from market payload.")
 
     @staticmethod
-    def _extract_outcome_percentages(payload: dict[str, Any]) -> tuple[float, float]:
+    def _extract_outcome_data(payload: dict[str, Any]) -> tuple[float, float, float, float, float]:
         outcome_stats = payload.get("outcomeStats")
         if not isinstance(outcome_stats, list) or len(outcome_stats) < 2:
-            return 50.0, 50.0
+            return 50.0, 50.0, 0.0, 0.0, 0.0
 
         totals: dict[int, float] = {}
         total_pool = 0.0
@@ -118,11 +123,11 @@ class MarketFeed:
                 total_pool += amount
 
         if total_pool <= 0:
-            return 50.0, 50.0
+            return 50.0, 50.0, totals.get(0, 0.0), totals.get(1, 0.0), 0.0
 
         yes_pct = totals.get(0, 0.0) / total_pool * 100
         no_pct = totals.get(1, 0.0) / total_pool * 100
-        return yes_pct, no_pct
+        return yes_pct, no_pct, totals.get(0, 0.0), totals.get(1, 0.0), total_pool
 
     @staticmethod
     def _is_matching_above_market(
@@ -207,7 +212,7 @@ class MarketFeed:
                 if start_ms <= timestamp <= stop_ms
             ]
             if not segment_points:
-                return None
+                break
             open_price = segment_points[0]
             close_price = segment_points[-1]
             high_price = max(segment_points)
@@ -230,6 +235,20 @@ class MarketFeed:
                 )
             )
 
+        if not segment_snapshots:
+            return None
+
+        if len(segment_snapshots) < len(self.SEGMENT_WINDOWS):
+            return RangeMetrics(
+                segments=tuple(segment_snapshots),
+                average_1=None,
+                average_2=None,
+                range_1_low=None,
+                range_1_high=None,
+                range_2_low=None,
+                range_2_high=None,
+            )
+
         segment_moves = [segment.signed_range for segment in segment_snapshots]
         average_1 = sum(segment_moves) / 2
         average_2 = average_1 / 3
@@ -237,12 +256,7 @@ class MarketFeed:
         width_2 = abs(average_2)
 
         return RangeMetrics(
-            segments=(
-                segment_snapshots[0],
-                segment_snapshots[1],
-                segment_snapshots[2],
-                segment_snapshots[3],
-            ),
+            segments=tuple(segment_snapshots),
             average_1=average_1,
             average_2=average_2,
             range_1_low=target_price - width_1,
@@ -254,7 +268,9 @@ class MarketFeed:
     def stream(self) -> Generator[Market, None, None]:
         while True:
             if not self._market_ids:
-                logger.warning("No active BTC/SOL/ETH above markets found. Retrying.")
+                if not self._waiting_for_markets_logged:
+                    logger.warning("No active BTC/SOL/ETH above markets found. Retrying.")
+                    self._waiting_for_markets_logged = True
                 try:
                     self.refresh_market_ids()
                 except Exception:
@@ -271,7 +287,7 @@ class MarketFeed:
                         continue
                     history_payload = self._fetch_price_history(market_id)
                     question = payload.get("question", slug)
-                    yes_pct, no_pct = self._extract_outcome_percentages(payload)
+                    yes_pct, no_pct, yes_pool, no_pool, total_pool = self._extract_outcome_data(payload)
                     target_price = self._extract_target_price(payload, question)
                     end_time = payload.get("endTime")
                     if not isinstance(end_time, str):
@@ -286,6 +302,9 @@ class MarketFeed:
                         current_price=self._extract_latest_price(history_payload),
                         yes_percentage=yes_pct,
                         no_percentage=no_pct,
+                        total_pool=total_pool,
+                        yes_pool=yes_pool,
+                        no_pool=no_pool,
                         thresholds=spec.thresholds,
                         range_metrics=self._build_range_metrics(
                             history_payload,
