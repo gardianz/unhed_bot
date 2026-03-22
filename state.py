@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import time
 from typing import Any
 
 from models import RoundState, Signal
-from telegram_notifier import telegram_notifier
 
 
 class BotState:
@@ -14,6 +14,7 @@ class BotState:
         self.last_bets: dict[str, str] = {}
         self.pending_bets_by_market_id: dict[str, str] = {}
         self.pending_event_details_logged: set[str] = set()
+        self.pending_telegram_update_at: dict[str, float] = {}
         self.total_bet_cc: float = 0.0
         self.starting_balance: float | None = None
         self.current_balance: float | None = None
@@ -87,10 +88,21 @@ class BotState:
     def add_event(self, message: str) -> None:
         self.events.append(message)
         self.events = self.events[-20:]
-        telegram_notifier.send(message)
 
     def mark_closed_market(self, market_slug: str, market_id: str) -> None:
         self.closed_market_ids[market_slug] = market_id
 
     def was_market_closed(self, market_slug: str, market_id: str) -> bool:
         return self.closed_market_ids.get(market_slug) == market_id
+
+    def should_send_pending_telegram_update(
+        self,
+        market_id: str,
+        interval_sec: float,
+    ) -> bool:
+        now = time.monotonic()
+        last_sent = self.pending_telegram_update_at.get(market_id)
+        if last_sent is None or now - last_sent >= interval_sec:
+            self.pending_telegram_update_at[market_id] = now
+            return True
+        return False

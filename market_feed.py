@@ -28,6 +28,11 @@ class MarketFeed:
         self._session.headers.update({"Accept": "application/json"})
         self._market_ids = self._resolve_market_ids()
         self._waiting_for_markets_logged = False
+        self._market_payload_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._price_history_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._price_history_phase_cache: dict[str, int] = {}
+        self._decision_window_history_locked: set[str] = set()
+        self._rate_limited_until: dict[str, float] = {}
 
     def refresh_market_ids(self) -> None:
         self._market_ids = self._resolve_market_ids()
@@ -35,7 +40,15 @@ class MarketFeed:
             self._waiting_for_markets_logged = False
 
     def drop_market(self, slug: str) -> None:
-        self._market_ids.pop(slug, None)
+        market_id = self._market_ids.pop(slug, None)
+        if not market_id:
+            return
+        self._market_payload_cache.pop(market_id, None)
+        self._price_history_cache.pop(market_id, None)
+        self._price_history_phase_cache.pop(market_id, None)
+        self._decision_window_history_locked.discard(market_id)
+        self._rate_limited_until.pop(f"market:{market_id}", None)
+        self._rate_limited_until.pop(f"history:{market_id}", None)
 
     def _resolve_market_ids(self) -> dict[str, str]:
         specs = config.market_specs
@@ -71,27 +84,70 @@ class MarketFeed:
         return market_ids
 
     def _fetch_market_payload(self, market_id: str) -> dict[str, Any]:
+        cache_key = f"market:{market_id}"
+        now = time.monotonic()
+        cached = self._market_payload_cache.get(market_id)
+        if cached and (
+            now - cached[0] < config.MARKET_DETAIL_REFRESH_SEC
+            or now < self._rate_limited_until.get(cache_key, 0.0)
+        ):
+            return cached[1]
+
         response = self._session.get(
             f"{config.UNHEDGED_API_BASE}/api/v1/markets/{market_id}",
             timeout=config.HTTP_TIMEOUT_SEC,
         )
+        if response.status_code == 429 and cached:
+            self._rate_limited_until[cache_key] = now + config.RATE_LIMIT_BACKOFF_SEC
+            return cached[1]
         response.raise_for_status()
         payload = response.json().get("market")
         if not isinstance(payload, dict):
             raise RuntimeError(f"Unexpected market payload for market_id={market_id}")
+        self._market_payload_cache[market_id] = (now, payload)
+        self._rate_limited_until.pop(cache_key, None)
         return payload
 
-    def _fetch_price_history(self, market_id: str) -> dict[str, Any]:
+    def _completed_segment_count(self, timer_left: int) -> int:
+        segment_end_thresholds = [25 * 60, 20 * 60, 15 * 60, 10 * 60, 5 * 60, 2 * 60]
+        return sum(1 for threshold in segment_end_thresholds if timer_left <= threshold)
+
+    def _fetch_price_history(self, market_id: str, timer_left: int) -> dict[str, Any]:
+        cache_key = f"history:{market_id}"
+        now = time.monotonic()
+        cached = self._price_history_cache.get(market_id)
+        current_phase = self._completed_segment_count(timer_left)
+        last_phase = self._price_history_phase_cache.get(market_id, -1)
+        if cached:
+            age = now - cached[0]
+            if now < self._rate_limited_until.get(cache_key, 0.0):
+                return cached[1]
+            if timer_left <= config.DECISION_WINDOW_SEC:
+                if market_id in self._decision_window_history_locked:
+                    return cached[1]
+            elif current_phase == last_phase:
+                return cached[1]
+
         response = self._session.get(
             f"{config.UNHEDGED_API_BASE}/api/v1/markets/{market_id}/price-history",
             timeout=config.HTTP_TIMEOUT_SEC,
         )
+        if response.status_code == 429 and cached:
+            self._rate_limited_until[cache_key] = now + config.RATE_LIMIT_BACKOFF_SEC
+            return cached[1]
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):
             raise RuntimeError(
                 f"Unexpected price-history payload for market_id={market_id}"
             )
+        self._price_history_cache[market_id] = (now, payload)
+        self._price_history_phase_cache[market_id] = current_phase
+        if timer_left <= config.DECISION_WINDOW_SEC:
+            self._decision_window_history_locked.add(market_id)
+        else:
+            self._decision_window_history_locked.discard(market_id)
+        self._rate_limited_until.pop(cache_key, None)
         return payload
 
     @staticmethod
@@ -285,7 +341,8 @@ class MarketFeed:
                     if payload.get("status") != "ACTIVE":
                         self.drop_market(slug)
                         continue
-                    history_payload = self._fetch_price_history(market_id)
+                    timer_left = self._compute_timer_left(payload)
+                    history_payload = self._fetch_price_history(market_id, timer_left)
                     question = payload.get("question", slug)
                     yes_pct, no_pct, yes_pool, no_pool, total_pool = self._extract_outcome_data(payload)
                     target_price = self._extract_target_price(payload, question)
@@ -298,14 +355,13 @@ class MarketFeed:
                         market_id=market_id,
                         question=question,
                         target_price=target_price,
-                        timer_left=self._compute_timer_left(payload),
+                        timer_left=timer_left,
                         current_price=self._extract_latest_price(history_payload),
                         yes_percentage=yes_pct,
                         no_percentage=no_pct,
                         total_pool=total_pool,
                         yes_pool=yes_pool,
                         no_pool=no_pool,
-                        thresholds=spec.thresholds,
                         range_metrics=self._build_range_metrics(
                             history_payload,
                             end_time,
@@ -321,6 +377,9 @@ class MarketFeed:
                         continue
                     if status_code == 504:
                         logger.warning("Market %s timed out upstream. Will retry.", slug)
+                        continue
+                    if status_code == 429:
+                        logger.warning("Market %s rate limited upstream. Using next cycle.", slug)
                         continue
                     logger.exception("Failed to refresh market %s", slug)
                 except Exception:

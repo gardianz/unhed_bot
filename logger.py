@@ -38,7 +38,8 @@ if not logger.handlers:
     logger.addHandler(handler)
     if telegram_notifier.enabled:
         telegram_handler = TelegramLogHandler()
-        telegram_handler.setLevel(getattr(logging, telegram_level_name, logging.WARNING))
+        configured_level = getattr(logging, telegram_level_name, logging.WARNING)
+        telegram_handler.setLevel(max(configured_level, logging.ERROR))
         telegram_handler.setFormatter(
             logging.Formatter(
                 "%(asctime)s %(levelname)s - %(message)s",

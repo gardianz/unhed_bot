@@ -4,8 +4,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Optional
 
-from config import ThresholdConfig
-
 Side = Literal["YES", "NO", "BOTH"]
 
 
@@ -44,7 +42,6 @@ class Market:
     total_pool: float
     yes_pool: float
     no_pool: float
-    thresholds: ThresholdConfig
     range_metrics: Optional[RangeMetrics] = None
     reference_price: Optional[float] = None
 

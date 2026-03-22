@@ -35,5 +35,9 @@ class TelegramNotifier:
             # Notification failure must never break trading or UI flow.
             return
 
+    def send_lines(self, *lines: str) -> None:
+        message = "\n".join(line for line in lines if line)
+        self.send(message)
+
 
 telegram_notifier = TelegramNotifier()

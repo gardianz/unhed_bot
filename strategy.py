@@ -14,7 +14,7 @@ class Strategy:
         self.state = state
 
     def evaluate(self, market: Market) -> Optional[Signal]:
-        if market.timer_left > 60 or market.timer_left <= 0:
+        if market.timer_left > config.DECISION_WINDOW_SEC or market.timer_left <= 0:
             return None
 
         state = self.state.get_or_create(market.slug)

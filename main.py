@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import time
 
 from dotenv import load_dotenv
 from rich.console import Group
@@ -19,6 +20,7 @@ from market_feed import MarketFeed
 from models import RangeMetrics, SegmentSnapshot
 from state import BotState
 from strategy import Strategy
+from telegram_notifier import telegram_notifier
 from utils import export_signal_history, load_json_list, save_json_list
 
 console = Console()
@@ -88,6 +90,35 @@ def build_pending_event_message(market, bet_summary: str) -> str:
         f"pool={market.total_pool:,.4f} CC | "
         f"{position_label} {market.target_delta:+.4f} | "
         f"est YES {estimate_yes} / NO {estimate_no}"
+    )
+
+
+def send_telegram_pending_message(
+    market,
+    bet_summary: str,
+    balance: float | None,
+    *,
+    restored: bool = False,
+) -> None:
+    if not telegram_notifier.enabled:
+        return
+    position_label = (
+        "ABOVE"
+        if market.target_delta > 0
+        else "BELOW"
+        if market.target_delta < 0
+        else "ON TARGET"
+    )
+    estimate_yes, estimate_no = estimate_resolution_outcomes(market, bet_summary)
+    telegram_notifier.send_lines(
+        "PENDING SETTLEMENT" if not restored else "RESTORED PENDING SETTLEMENT",
+        f"balance: {format_cc(balance)}",
+        f"nama market: {market.question}",
+        f"position: {position_label}",
+        f"bet: {bet_summary}",
+        f"pool: {format_cc(market.total_pool)}",
+        f"estimasi: YES {estimate_yes} | NO {estimate_no}",
+        f"delta: {format_delta(market.target_delta)}",
     )
 
 
@@ -251,6 +282,7 @@ def display_metrics(state: BotState, market):
 def build_lines(markets, state):
     pnl = state.get_pnl()
     pnl_style = "green" if pnl is not None and pnl >= 0 else "red"
+    decision_window_label = format_time_left(config.DECISION_WINDOW_SEC)
 
     title = Text("Unhedged FULL AUTO BOT", style="bold white")
     summary = Text()
@@ -321,17 +353,17 @@ def build_lines(markets, state):
                 status_label = "RESTORED | PENDING"
             elif metrics is None:
                 status_label = "BUILDING RANGE"
-            elif market.timer_left > 60:
+            elif market.timer_left > config.DECISION_WINDOW_SEC:
                 if zone_label == "YES ZONE":
-                    status_label = "WAIT 1M: YES"
+                    status_label = f"WAIT {decision_window_label}: YES"
                 elif zone_label == "NO ZONE":
-                    status_label = "WAIT 1M: NO"
+                    status_label = f"WAIT {decision_window_label}: NO"
                 elif zone_label == "BOTH ZONE":
-                    status_label = "WAIT 1M: BOTH"
+                    status_label = f"WAIT {decision_window_label}: BOTH"
                 elif zone_label == "AVG1 TOO SMALL":
                     status_label = "AVG1 TOO SMALL"
                 else:
-                    status_label = "WAIT 1M"
+                    status_label = f"WAIT {decision_window_label}"
             else:
                 if zone_label == "YES ZONE":
                     status_label = "READY YES"
@@ -563,6 +595,19 @@ def main() -> None:
             ):
                 state.add_event(build_pending_event_message(market, restored_summary))
                 state.mark_pending_details_logged(market.market_id)
+            if (
+                restored_summary is not None
+                and state.should_send_pending_telegram_update(
+                    market.market_id,
+                    config.TELEGRAM_POSITION_UPDATE_SEC,
+                )
+            ):
+                send_telegram_pending_message(
+                    market,
+                    restored_summary,
+                    state.current_balance,
+                    restored=True,
+                )
             freeze_segment_metrics(state, market)
 
             signal = strategy.evaluate(market)
@@ -578,10 +623,21 @@ def main() -> None:
                 state.add_event(
                     f"{market.symbol} {summary} delta={signal.delta:+.4f} balance={current_balance:.4f} CC"
                 )
+                telegram_notifier.send_lines(
+                    "BET TERKIRIM",
+                    f"balance: {format_cc(current_balance)}",
+                    f"nama market: {market.question}",
+                    f"position: {'ABOVE' if market.target_delta > 0 else 'BELOW' if market.target_delta < 0 else 'ON TARGET'}",
+                    f"bet: {summary}",
+                    f"pool: {format_cc(market.total_pool)}",
+                    f"estimasi: YES {estimate_resolution_outcomes(market, summary)[0]} | NO {estimate_resolution_outcomes(market, summary)[1]}",
+                    f"delta: {format_delta(signal.delta)}",
+                )
                 round_state = state.get_or_create(market.slug)
                 if not round_state.pending_settlement_logged:
                     state.add_event(build_pending_event_message(market, summary))
                     state.mark_pending_details_logged(market.market_id)
+                    state.pending_telegram_update_at[market.market_id] = time.monotonic()
                     round_state.pending_settlement_logged = True
                 persist_pending_bets(state)
                 export_signal_history(state.recent_activity, config.SIGNAL_HISTORY_PATH)

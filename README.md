@@ -1,6 +1,6 @@
 # Unhedged FULL AUTO Signal Bot
 
-Bot ini membaca market aktif BTC, SOL, dan ETH dari API Unhedged, menghitung range harga dari histori sebelum market close, lalu mengambil keputusan bet hanya di 1 menit terakhir.
+Bot ini membaca market aktif BTC, SOL, dan ETH dari API Unhedged, menghitung range harga dari histori sebelum market close, lalu mengambil keputusan bet hanya di jendela keputusan terakhir yang bisa diatur dari `.env`.
 
 ## Logic
 
@@ -33,7 +33,7 @@ Setiap segmen dibekukan begitu rentangnya lewat, jadi `high`, `low`, dan nilai s
 
 ## Rule Bet
 
-Keputusan hanya diambil saat `time left <= 1 menit`.
+Keputusan hanya diambil saat `time left <= DECISION_WINDOW_SEC`.
 
 - jika `current price` ada di dalam `range_2` -> bet `BOTH`
 - jika `current price` ada di atas `range_1` -> bet `YES`
@@ -76,6 +76,10 @@ Salin `.env.example` ke `.env`, lalu isi:
 - `STAKE_CC`
 - `HTTP_TIMEOUT_SEC`
 - `POLL_INTERVAL_SEC`
+- `DECISION_WINDOW_SEC`
+- `MARKET_DETAIL_REFRESH_SEC`
+- `PRICE_HISTORY_REFRESH_SEC`
+- `RATE_LIMIT_BACKOFF_SEC`
 - `BTC_MARKET_ID`, `SOL_MARKET_ID`, `ETH_MARKET_ID`
 - `BTC_AVG1_MIN`, `SOL_AVG1_MIN`, `ETH_AVG1_MIN`
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` untuk kirim event ke Telegram
