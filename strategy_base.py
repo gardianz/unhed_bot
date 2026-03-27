@@ -148,7 +148,7 @@ class BaseStrategy(ABC):
             market_slug=market.slug,
             market_id=market.market_id,
             side=side,
-            stake=config.STAKE_CC,
+            stake=config.stake_for_side(side),
             delta=market.target_delta,
             reason=reason,
             signal_id=uuid.uuid4().hex,

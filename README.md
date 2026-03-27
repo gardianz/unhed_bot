@@ -66,6 +66,8 @@ Variable utama:
   `1` untuk strategi lama, `2` untuk strategi baru.
 - `STAKE_CC`
   Nominal stake per order.
+- `BOTH_STAKE_CC`
+  Total stake khusus untuk signal `BOTH`. Nilai ini akan dibagi rata ke `YES` dan `NO`.
 - `DECISION_WINDOW_SEC`
   Bet hanya dipertimbangkan saat sisa waktu kurang dari atau sama dengan nilai ini.
 

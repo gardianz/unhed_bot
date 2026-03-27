@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import time
+from datetime import timedelta
 
 from dotenv import load_dotenv
 from rich.console import Group
@@ -24,6 +25,7 @@ from telegram_notifier import telegram_notifier
 from utils import export_signal_history, load_json_list, save_json_list
 
 console = Console()
+UTC_MARKET_TIME_PATTERN = re.compile(r"\bat\s+(?P<hour>\d{2}):(?P<minute>\d{2})\s+UTC\b")
 
 
 def format_time_left(total_seconds: int) -> str:
@@ -42,6 +44,22 @@ def format_cc(value: float | None) -> str:
     if value is None:
         return "-"
     return f"{value:,.4f} CC"
+
+
+def format_market_question_for_telegram(question: str) -> str:
+    def _replace(match: re.Match[str]) -> str:
+        hour = int(match.group("hour"))
+        minute = int(match.group("minute"))
+        total_minutes = hour * 60 + minute
+        wib_minutes = total_minutes + int(timedelta(hours=7).total_seconds() // 60)
+        day_offset, minute_of_day = divmod(wib_minutes, 24 * 60)
+        wib_hour, wib_minute = divmod(minute_of_day, 60)
+        suffix = " WIB"
+        if day_offset > 0:
+            suffix = f" WIB (+{day_offset}d)"
+        return f"at {wib_hour:02d}:{wib_minute:02d}{suffix}"
+
+    return UTC_MARKET_TIME_PATTERN.sub(_replace, question)
 
 
 def parse_bet_summary(summary: str) -> tuple[float, float]:
@@ -113,7 +131,7 @@ def send_telegram_pending_message(
     telegram_notifier.send_lines(
         "PENDING SETTLEMENT" if not restored else "RESTORED PENDING SETTLEMENT",
         f"balance: {format_cc(balance)}",
-        f"nama market: {market.question}",
+        f"nama market: {format_market_question_for_telegram(market.question)}",
         f"position: {position_label}",
         f"bet: {bet_summary}",
         f"pool: {format_cc(market.total_pool)}",
@@ -648,7 +666,7 @@ def main() -> None:
                 telegram_notifier.send_lines(
                     "BET TERKIRIM",
                     f"balance: {format_cc(current_balance)}",
-                    f"nama market: {market.question}",
+                    f"nama market: {format_market_question_for_telegram(market.question)}",
                     f"position: {'ABOVE' if market.target_delta > 0 else 'BELOW' if market.target_delta < 0 else 'ON TARGET'}",
                     f"bet: {summary}",
                     f"pool: {format_cc(market.total_pool)}",

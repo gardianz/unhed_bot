@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class Config:
         self.SELECT_STRATEGY = _env_str("SELECT_STRATEGY", "1").strip() or "1"
         self.HTTP_CONNECT_TIMEOUT_SEC = _env_float("HTTP_CONNECT_TIMEOUT_SEC", 3.0)
         self.STAKE_CC = _env_float("STAKE_CC", 5.0)
+        self.BOTH_STAKE_CC = _env_float("BOTH_STAKE_CC", 5.0)
         self.HTTP_TIMEOUT_SEC = _env_float("HTTP_TIMEOUT_SEC", 10.0)
         self.POLL_INTERVAL_SEC = _env_float("POLL_INTERVAL_SEC", 1.0)
         self.DECISION_WINDOW_SEC = _env_int("DECISION_WINDOW_SEC", 10)
@@ -70,6 +72,8 @@ class Config:
             raise ValueError("HTTP_CONNECT_TIMEOUT_SEC must be greater than 0.")
         if self.STAKE_CC <= 0:
             raise ValueError("STAKE_CC must be greater than 0.")
+        if self.BOTH_STAKE_CC <= 0:
+            raise ValueError("BOTH_STAKE_CC must be greater than 0.")
         if self.HTTP_TIMEOUT_SEC <= 0:
             raise ValueError("HTTP_TIMEOUT_SEC must be greater than 0.")
         if self.POLL_INTERVAL_SEC <= 0:
@@ -120,6 +124,11 @@ class Config:
             return mapping[side]
         except KeyError as exc:
             raise ValueError(f"Unsupported side: {side}") from exc
+
+    def stake_for_side(self, side: Literal["YES", "NO", "BOTH"]) -> float:
+        if side == "BOTH":
+            return self.BOTH_STAKE_CC
+        return self.STAKE_CC
 
     def minimum_average_1(self, symbol: str) -> float:
         mapping = {

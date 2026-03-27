@@ -176,13 +176,16 @@ class LiveExecutionAdapter:
             if signal.side == "BOTH"
             else [config.outcome_index(signal.side)]
         )
+        amount_per_outcome = (
+            signal.stake / len(outcomes) if signal.side == "BOTH" else signal.stake
+        )
 
         placed_bets: list[dict] = []
         for idx in outcomes:
             payload = {
                 "marketId": signal.market_id,
                 "outcomeIndex": idx,
-                "amount": signal.stake,
+                "amount": amount_per_outcome,
                 "idempotencyKey": f"{signal.signal_id}-{idx}",
             }
             try:
@@ -242,11 +245,12 @@ class LiveExecutionAdapter:
     @staticmethod
     def summarize_bets(signal: Signal, placed_bets: list[dict]) -> str:
         if signal.side == "BOTH":
-            return f"BOTH {signal.stake:.2f} CC x2"
+            half_stake = signal.stake / 2
+            return f"BOTH YES {half_stake:.2f} / NO {half_stake:.2f} CC"
         if not placed_bets:
             return f"{signal.side} {signal.stake:.2f} CC"
         return f"{signal.side} {signal.stake:.2f} CC"
 
     @staticmethod
     def total_stake(signal: Signal) -> float:
-        return signal.stake * (2 if signal.side == "BOTH" else 1)
+        return signal.stake

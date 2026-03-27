@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import UTC, datetime, timedelta, timezone
 
 from telegram_notifier import telegram_notifier
+
+WIB = timezone(timedelta(hours=7), name="WIB")
 
 
 class AppLogger(logging.Logger):
@@ -20,6 +23,14 @@ class TelegramLogHandler(logging.Handler):
         except Exception:
             message = record.getMessage()
         telegram_notifier.send(message)
+
+
+class WIBFormatter(logging.Formatter):
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        dt = datetime.fromtimestamp(record.created, tz=UTC).astimezone(WIB)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.isoformat()
 
 
 logging.setLoggerClass(AppLogger)
@@ -41,9 +52,9 @@ if not logger.handlers:
         configured_level = getattr(logging, telegram_level_name, logging.WARNING)
         telegram_handler.setLevel(max(configured_level, logging.ERROR))
         telegram_handler.setFormatter(
-            logging.Formatter(
+            WIBFormatter(
                 "%(asctime)s %(levelname)s - %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
+                datefmt="%Y-%m-%d %H:%M:%S WIB",
             )
         )
         logger.addHandler(telegram_handler)
