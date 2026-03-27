@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 from telegram_notifier import telegram_notifier
 
@@ -27,7 +27,7 @@ class TelegramLogHandler(logging.Handler):
 
 class WIBFormatter(logging.Formatter):
     def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
-        dt = datetime.fromtimestamp(record.created, tz=UTC).astimezone(WIB)
+        dt = datetime.fromtimestamp(record.created, tz=timezone.utc).astimezone(WIB)
         if datefmt:
             return dt.strftime(datefmt)
         return dt.isoformat()
