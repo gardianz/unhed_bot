@@ -1,12 +1,31 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Any
 
 import requests
+from requests import HTTPError, RequestException
 
 from config import config
 from logger import logger
 from models import Signal
+
+
+class BetExecutionError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retryable: bool = False,
+        partial: bool = False,
+        response_body: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.retryable = retryable
+        self.partial = partial
+        self.response_body = response_body
 
 
 class LiveExecutionAdapter:
@@ -23,12 +42,35 @@ class LiveExecutionAdapter:
                 "Accept": "application/json",
             }
         )
+        logger.info("Fetching starting balance...")
         self._starting_balance = self._check_balance(log_message=True)
+
+    @property
+    def request_timeout(self) -> tuple[float, float]:
+        return (config.HTTP_CONNECT_TIMEOUT_SEC, config.HTTP_TIMEOUT_SEC)
+
+    @staticmethod
+    def _format_error_body(response: requests.Response | None) -> str | None:
+        if response is None:
+            return None
+        try:
+            payload: Any = response.json()
+        except ValueError:
+            payload = response.text.strip()
+        if isinstance(payload, dict):
+            for key in ("message", "error", "details"):
+                value = payload.get(key)
+                if value:
+                    return str(value)
+            return str(payload)
+        if payload:
+            return str(payload)
+        return None
 
     def _check_balance(self, *, log_message: bool) -> float:
         response = self._session.get(
             f"{self.base}/api/v1/balance",
-            timeout=config.HTTP_TIMEOUT_SEC,
+            timeout=self.request_timeout,
         )
         response.raise_for_status()
         available = float(response.json()["balance"]["available"])
@@ -52,7 +94,7 @@ class LiveExecutionAdapter:
             response = self._session.get(
                 f"{self.base}/api/v1/bets",
                 params={"limit": limit, "offset": offset},
-                timeout=config.HTTP_TIMEOUT_SEC,
+                timeout=self.request_timeout,
             )
             response.raise_for_status()
             payload = response.json()
@@ -147,22 +189,53 @@ class LiveExecutionAdapter:
                 response = self._session.post(
                     f"{self.base}/api/v1/bets",
                     json=payload,
-                    timeout=config.HTTP_TIMEOUT_SEC,
+                    timeout=self.request_timeout,
                 )
                 response.raise_for_status()
                 data = response.json()
                 placed_bets.append(data)
-            except Exception:
-                logger.exception(
-                    "Bet placement failed for signal_id=%s outcome_index=%s",
-                    signal.signal_id,
-                    idx,
+            except HTTPError as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                response_body = self._format_error_body(exc.response)
+                message = (
+                    f"Bet placement failed for signal_id={signal.signal_id} "
+                    f"outcome_index={idx} status={status_code}"
                 )
+                if response_body:
+                    message = f"{message} body={response_body}"
+                logger.error(message)
                 if placed_bets:
-                    raise RuntimeError(
-                        f"Partial execution detected for signal_id={signal.signal_id}."
+                    raise BetExecutionError(
+                        f"Partial execution detected for signal_id={signal.signal_id}.",
+                        status_code=status_code,
+                        retryable=False,
+                        partial=True,
+                        response_body=response_body,
                     ) from None
-                raise
+                raise BetExecutionError(
+                    message,
+                    status_code=status_code,
+                    retryable=bool(status_code and status_code >= 500),
+                    partial=False,
+                    response_body=response_body,
+                ) from None
+            except RequestException as exc:
+                message = (
+                    f"Bet placement request failed for signal_id={signal.signal_id} "
+                    f"outcome_index={idx}: {exc}"
+                )
+                logger.error(message)
+                if placed_bets:
+                    raise BetExecutionError(
+                        f"Partial execution detected for signal_id={signal.signal_id}.",
+                        retryable=False,
+                        partial=True,
+                    ) from None
+                raise BetExecutionError(
+                    message,
+                    retryable=True,
+                    partial=False,
+                ) from None
 
         return placed_bets
 

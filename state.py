@@ -21,9 +21,13 @@ class BotState:
         self.events: list[str] = []
         self.closed_market_ids: dict[str, str] = {}
 
-    def get_or_create(self, slug: str) -> RoundState:
+    def get_or_create(self, slug: str, segment_count: int | None = None) -> RoundState:
         if slug not in self.rounds or self.rounds[slug].completed:
             self.rounds[slug] = RoundState(market_slug=slug)
+        if segment_count is not None:
+            frozen_segments = self.rounds[slug].frozen_segments
+            if len(frozen_segments) < segment_count:
+                frozen_segments.extend([None] * (segment_count - len(frozen_segments)))
         return self.rounds[slug]
 
     def reset_round(self, slug: str) -> None:
@@ -58,6 +62,8 @@ class BotState:
         round_state = self.rounds.get(market_slug)
         if round_state is None or round_state.completed:
             return "WAITING"
+        if round_state.execution_blocked:
+            return "BET FAILED"
         if round_state.triggered_yes:
             return "YES SENT"
         if round_state.triggered_no:
@@ -65,6 +71,29 @@ class BotState:
         if round_state.triggered_both:
             return "BOTH SENT"
         return "MONITORING"
+
+    def mark_signal_sent(self, market_slug: str, side: str, segment_count: int | None = None) -> None:
+        round_state = self.get_or_create(market_slug, segment_count=segment_count)
+        round_state.execution_blocked = False
+        round_state.last_error = None
+        if side == "YES":
+            round_state.triggered_yes = True
+        elif side == "NO":
+            round_state.triggered_no = True
+        elif side == "BOTH":
+            round_state.triggered_both = True
+        else:
+            raise ValueError(f"Unsupported signal side: {side}")
+
+    def block_round_execution(
+        self,
+        market_slug: str,
+        reason: str,
+        segment_count: int | None = None,
+    ) -> None:
+        round_state = self.get_or_create(market_slug, segment_count=segment_count)
+        round_state.execution_blocked = True
+        round_state.last_error = reason
 
     def record_total_bet(self, amount: float) -> None:
         self.total_bet_cc += amount

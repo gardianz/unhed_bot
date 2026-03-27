@@ -7,6 +7,17 @@ from typing import Literal, Optional
 Side = Literal["YES", "NO", "BOTH"]
 
 
+@dataclass(frozen=True)
+class SegmentWindow:
+    label: str
+    start_min: int
+    stop_min: int
+
+    @property
+    def freeze_threshold_sec(self) -> int:
+        return self.stop_min * 60
+
+
 @dataclass
 class SegmentSnapshot:
     label: str
@@ -70,9 +81,9 @@ class RoundState:
     triggered_both: bool = False
     triggered_yes: bool = False
     triggered_no: bool = False
+    execution_blocked: bool = False
+    last_error: Optional[str] = None
     pending_settlement_logged: bool = False
     frozen_range_metrics: Optional[RangeMetrics] = None
-    frozen_segments: list[Optional[SegmentSnapshot]] = field(
-        default_factory=lambda: [None, None, None, None, None, None]
-    )
+    frozen_segments: list[Optional[SegmentSnapshot]] = field(default_factory=list)
     completed: bool = False

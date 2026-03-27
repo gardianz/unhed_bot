@@ -10,22 +10,16 @@ from requests import HTTPError
 
 from config import config
 from logger import logger
-from models import Market, RangeMetrics, SegmentSnapshot
+from models import Market
+from strategy_base import BaseStrategy
 
 
 class MarketFeed:
-    SEGMENT_WINDOWS = (
-        ("seg1", 30, 25),
-        ("seg2", 25, 20),
-        ("seg3", 20, 15),
-        ("seg4", 15, 10),
-        ("seg5", 10, 5),
-        ("seg6", 5, 2),
-    )
-
-    def __init__(self) -> None:
+    def __init__(self, strategy: BaseStrategy) -> None:
+        self._strategy = strategy
         self._session = requests.Session()
         self._session.headers.update({"Accept": "application/json"})
+        logger.info("Resolving active market ids...")
         self._market_ids = self._resolve_market_ids()
         self._waiting_for_markets_logged = False
         self._market_payload_cache: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -33,6 +27,10 @@ class MarketFeed:
         self._price_history_phase_cache: dict[str, int] = {}
         self._decision_window_history_locked: set[str] = set()
         self._rate_limited_until: dict[str, float] = {}
+
+    @property
+    def request_timeout(self) -> tuple[float, float]:
+        return (config.HTTP_CONNECT_TIMEOUT_SEC, config.HTTP_TIMEOUT_SEC)
 
     def refresh_market_ids(self) -> None:
         self._market_ids = self._resolve_market_ids()
@@ -64,7 +62,7 @@ class MarketFeed:
         response = self._session.get(
             f"{config.UNHEDGED_API_BASE}/api/v1/markets",
             params={"category": "Crypto", "status": "ACTIVE", "limit": 100},
-            timeout=config.HTTP_TIMEOUT_SEC,
+            timeout=self.request_timeout,
         )
         response.raise_for_status()
         markets = response.json().get("markets", [])
@@ -95,7 +93,7 @@ class MarketFeed:
 
         response = self._session.get(
             f"{config.UNHEDGED_API_BASE}/api/v1/markets/{market_id}",
-            timeout=config.HTTP_TIMEOUT_SEC,
+            timeout=self.request_timeout,
         )
         if response.status_code == 429 and cached:
             self._rate_limited_until[cache_key] = now + config.RATE_LIMIT_BACKOFF_SEC
@@ -109,7 +107,9 @@ class MarketFeed:
         return payload
 
     def _completed_segment_count(self, timer_left: int) -> int:
-        segment_end_thresholds = [25 * 60, 20 * 60, 15 * 60, 10 * 60, 5 * 60, 2 * 60]
+        segment_end_thresholds = [
+            segment.freeze_threshold_sec for segment in self._strategy.segment_windows
+        ]
         return sum(1 for threshold in segment_end_thresholds if timer_left <= threshold)
 
     def _fetch_price_history(self, market_id: str, timer_left: int) -> dict[str, Any]:
@@ -119,7 +119,6 @@ class MarketFeed:
         current_phase = self._completed_segment_count(timer_left)
         last_phase = self._price_history_phase_cache.get(market_id, -1)
         if cached:
-            age = now - cached[0]
             if now < self._rate_limited_until.get(cache_key, 0.0):
                 return cached[1]
             if timer_left <= config.DECISION_WINDOW_SEC:
@@ -130,7 +129,7 @@ class MarketFeed:
 
         response = self._session.get(
             f"{config.UNHEDGED_API_BASE}/api/v1/markets/{market_id}/price-history",
-            timeout=config.HTTP_TIMEOUT_SEC,
+            timeout=self.request_timeout,
         )
         if response.status_code == 429 and cached:
             self._rate_limited_until[cache_key] = now + config.RATE_LIMIT_BACKOFF_SEC
@@ -209,31 +208,6 @@ class MarketFeed:
             raise RuntimeError(f"Latest price is not numeric: {latest['price']!r}") from None
 
     @staticmethod
-    def _extract_price_points(history_payload: dict[str, Any]) -> list[tuple[int, float]]:
-        prices = history_payload.get("prices")
-        if not isinstance(prices, list) or not prices:
-            raise RuntimeError("Price history payload does not contain any prices.")
-
-        points: list[tuple[int, float]] = []
-        for item in prices:
-            if not isinstance(item, dict):
-                continue
-            timestamp = item.get("timestamp")
-            price = item.get("price")
-            if not isinstance(timestamp, (int, float)):
-                continue
-            try:
-                points.append((int(timestamp), float(price)))
-            except (TypeError, ValueError):
-                continue
-
-        if not points:
-            raise RuntimeError("Price history payload does not contain valid price points.")
-
-        points.sort(key=lambda point: point[0])
-        return points
-
-    @staticmethod
     def _compute_timer_left(payload: dict[str, Any]) -> int:
         end_time = payload.get("endTime")
         if not end_time:
@@ -244,82 +218,6 @@ class MarketFeed:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         remaining = expires_at - datetime.now(timezone.utc)
         return max(0, int(remaining.total_seconds()))
-
-    def _build_range_metrics(
-        self,
-        history_payload: dict[str, Any],
-        end_time: str,
-        target_price: float,
-    ) -> RangeMetrics | None:
-        points = self._extract_price_points(history_payload)
-        end_dt = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
-        if end_dt.tzinfo is None:
-            end_dt = end_dt.replace(tzinfo=timezone.utc)
-        end_ms = int(end_dt.timestamp() * 1000)
-
-        segment_snapshots: list[SegmentSnapshot] = []
-
-        for label, start_min, stop_min in self.SEGMENT_WINDOWS:
-            start_ms = end_ms - start_min * 60 * 1000
-            stop_ms = end_ms - stop_min * 60 * 1000
-            segment_points = [
-                price
-                for timestamp, price in points
-                if start_ms <= timestamp <= stop_ms
-            ]
-            if not segment_points:
-                break
-            open_price = segment_points[0]
-            close_price = segment_points[-1]
-            high_price = max(segment_points)
-            low_price = min(segment_points)
-            direction = close_price - open_price
-            if direction > 0:
-                signed_range = high_price - low_price
-            elif direction < 0:
-                signed_range = -(high_price - low_price)
-            else:
-                signed_range = 0.0
-            segment_snapshots.append(
-                SegmentSnapshot(
-                    label=label,
-                    open_price=open_price,
-                    close_price=close_price,
-                    high_price=high_price,
-                    low_price=low_price,
-                    signed_range=signed_range,
-                )
-            )
-
-        if not segment_snapshots:
-            return None
-
-        if len(segment_snapshots) < len(self.SEGMENT_WINDOWS):
-            return RangeMetrics(
-                segments=tuple(segment_snapshots),
-                average_1=None,
-                average_2=None,
-                range_1_low=None,
-                range_1_high=None,
-                range_2_low=None,
-                range_2_high=None,
-            )
-
-        segment_moves = [segment.signed_range for segment in segment_snapshots]
-        average_1 = sum(segment_moves) / 2
-        average_2 = average_1 / 3
-        width_1 = abs(average_1)
-        width_2 = abs(average_2)
-
-        return RangeMetrics(
-            segments=tuple(segment_snapshots),
-            average_1=average_1,
-            average_2=average_2,
-            range_1_low=target_price - width_1,
-            range_1_high=target_price + width_1,
-            range_2_low=target_price - width_2,
-            range_2_high=target_price + width_2,
-        )
 
     def stream(self) -> Generator[Market, None, None]:
         while True:
@@ -362,7 +260,7 @@ class MarketFeed:
                         total_pool=total_pool,
                         yes_pool=yes_pool,
                         no_pool=no_pool,
-                        range_metrics=self._build_range_metrics(
+                        range_metrics=self._strategy.build_range_metrics(
                             history_payload,
                             end_time,
                             target_price,

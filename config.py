@@ -42,6 +42,8 @@ class Config:
     def __init__(self) -> None:
         self.UNHEDGED_API_KEY = _env_str("UNHEDGED_API_KEY")
         self.UNHEDGED_API_BASE = _env_str("UNHEDGED_API_BASE", "https://api.unhedged.gg")
+        self.SELECT_STRATEGY = _env_str("SELECT_STRATEGY", "1").strip() or "1"
+        self.HTTP_CONNECT_TIMEOUT_SEC = _env_float("HTTP_CONNECT_TIMEOUT_SEC", 3.0)
         self.STAKE_CC = _env_float("STAKE_CC", 5.0)
         self.HTTP_TIMEOUT_SEC = _env_float("HTTP_TIMEOUT_SEC", 10.0)
         self.POLL_INTERVAL_SEC = _env_float("POLL_INTERVAL_SEC", 1.0)
@@ -62,6 +64,10 @@ class Config:
         self.ETH_AVG1_MIN = _env_float("ETH_AVG1_MIN", 2.55)
 
     def validate_runtime(self) -> None:
+        if self.SELECT_STRATEGY not in {"1", "2"}:
+            raise ValueError("SELECT_STRATEGY must be either '1' or '2'.")
+        if self.HTTP_CONNECT_TIMEOUT_SEC <= 0:
+            raise ValueError("HTTP_CONNECT_TIMEOUT_SEC must be greater than 0.")
         if self.STAKE_CC <= 0:
             raise ValueError("STAKE_CC must be greater than 0.")
         if self.HTTP_TIMEOUT_SEC <= 0:

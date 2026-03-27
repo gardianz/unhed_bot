@@ -14,12 +14,12 @@ import re
 load_dotenv()
 
 from config import config
-from execution import LiveExecutionAdapter
+from execution import BetExecutionError, LiveExecutionAdapter
 from logger import logger
 from market_feed import MarketFeed
 from models import RangeMetrics, SegmentSnapshot
 from state import BotState
-from strategy import Strategy
+from strategy import build_strategy
 from telegram_notifier import telegram_notifier
 from utils import export_signal_history, load_json_list, save_json_list
 
@@ -206,27 +206,15 @@ def build_event_panel(message: str) -> Panel:
 
 
 def rebuild_range_metrics(
+    strategy,
     segments: tuple[SegmentSnapshot, ...],
     target_price: float,
 ) -> RangeMetrics:
-    signed_ranges = [segment.signed_range for segment in segments]
-    average_1 = sum(signed_ranges) / 2
-    average_2 = average_1 / 3
-    width_1 = abs(average_1)
-    width_2 = abs(average_2)
-    return RangeMetrics(
-        segments=segments,
-        average_1=average_1,
-        average_2=average_2,
-        range_1_low=target_price - width_1,
-        range_1_high=target_price + width_1,
-        range_2_low=target_price - width_2,
-        range_2_high=target_price + width_2,
-    )
+    return strategy.rebuild_range_metrics(segments, target_price)
 
 
-def display_metrics(state: BotState, market):
-    round_state = state.get_or_create(market.slug)
+def display_metrics(state: BotState, strategy, market):
+    round_state = state.get_or_create(market.slug, strategy.segment_count)
     if round_state.frozen_range_metrics is not None:
         return round_state.frozen_range_metrics
 
@@ -276,15 +264,15 @@ def display_metrics(state: BotState, market):
             range_2_low=None,
             range_2_high=None,
         )
-    return rebuild_range_metrics(tuple(merged_segments), market.target_price)
+    return rebuild_range_metrics(strategy, tuple(merged_segments), market.target_price)
 
 
-def build_lines(markets, state):
+def build_lines(markets, state, strategy):
     pnl = state.get_pnl()
     pnl_style = "green" if pnl is not None and pnl >= 0 else "red"
     decision_window_label = format_time_left(config.DECISION_WINDOW_SEC)
 
-    title = Text("Unhedged FULL AUTO BOT", style="bold white")
+    title = Text(f"Unhedged FULL AUTO BOT | Strategy {config.SELECT_STRATEGY}", style="bold white")
     summary = Text()
     summary.append("balance: ", style="white")
     summary.append(format_cc(state.current_balance), style="green")
@@ -298,10 +286,10 @@ def build_lines(markets, state):
 
     for slug in sorted(markets):
         market = markets[slug]
-        round_state = state.get_or_create(slug)
-        metrics = display_metrics(state, market)
+        round_state = state.get_or_create(slug, strategy.segment_count)
+        metrics = display_metrics(state, strategy, market)
         target_delta = market.target_delta
-        min_avg1 = config.minimum_average_1(market.symbol)
+        min_avg1 = strategy.minimum_average_1(market.symbol)
         base_status = state.get_market_status(slug)
 
         if metrics is None:
@@ -316,7 +304,11 @@ def build_lines(markets, state):
             delta_style = "bold yellow"
             status_style = "yellow"
             zone_label = "BOTH ZONE"
-        elif metrics.average_1 is not None and abs(metrics.average_1) < min_avg1:
+        elif (
+            min_avg1 is not None
+            and metrics.average_1 is not None
+            and abs(metrics.average_1) < min_avg1
+        ):
             delta_style = "white"
             status_style = "bright_black"
             zone_label = "AVG1 TOO SMALL"
@@ -332,6 +324,9 @@ def build_lines(markets, state):
             delta_style = "white"
             status_style = "white"
             zone_label = "NO BET ZONE"
+
+        if base_status == "BET FAILED":
+            status_style = "red"
 
         status_label = base_status
         if (
@@ -375,6 +370,8 @@ def build_lines(markets, state):
                     status_label = "AVG1 TOO SMALL"
                 else:
                     status_label = "NO SIGNAL"
+        if base_status == "BET FAILED" and round_state.last_error:
+            status_label = f"BET FAILED | {round_state.last_error}"
 
         header = Text()
         header.append(f"{market.symbol}", style="bold cyan")
@@ -435,14 +432,15 @@ def build_lines(markets, state):
         ):
             ready_segments = len(metrics.segments) if metrics is not None else 0
             threshold_line.append(
-                f"ranges: waiting for enough history ({ready_segments}/6 segments ready)",
+                f"ranges: waiting for enough history ({ready_segments}/{strategy.segment_count} segments ready)",
                 style="bright_black",
             )
         else:
             threshold_line.append("avg_1: ", style="white")
             threshold_line.append(f"{metrics.average_1:+.4f}", style="cyan")
-            threshold_line.append("   min avg_1: ", style="white")
-            threshold_line.append(f"{min_avg1:+.4f}", style="bright_black")
+            if min_avg1 is not None:
+                threshold_line.append("   min avg_1: ", style="white")
+                threshold_line.append(f"{min_avg1:+.4f}", style="bright_black")
             threshold_line.append("   avg_2: ", style="white")
             threshold_line.append(f"{metrics.average_2:+.4f}", style="cyan")
             threshold_line.append("   range_1: ", style="white")
@@ -518,13 +516,15 @@ def persist_pending_bets(state: BotState) -> None:
     save_json_list(items, config.PENDING_BETS_PATH)
 
 
-def freeze_segment_metrics(state: BotState, market) -> None:
-    round_state = state.get_or_create(market.slug)
+def freeze_segment_metrics(state: BotState, strategy, market) -> None:
+    round_state = state.get_or_create(market.slug, strategy.segment_count)
     metrics = market.range_metrics
     if metrics is None:
         return
 
-    freeze_thresholds = (25 * 60, 20 * 60, 15 * 60, 10 * 60, 5 * 60, 2 * 60)
+    freeze_thresholds = tuple(
+        segment.freeze_threshold_sec for segment in strategy.segment_windows
+    )
     for idx, threshold in enumerate(freeze_thresholds):
         if (
             idx < len(metrics.segments)
@@ -540,6 +540,7 @@ def freeze_segment_metrics(state: BotState, market) -> None:
         and all(frozen_segments)
     ):
         round_state.frozen_range_metrics = rebuild_range_metrics(
+            strategy,
             tuple(segment for segment in frozen_segments if segment is not None),
             market.target_price,
         )
@@ -549,8 +550,8 @@ def main() -> None:
     config.validate_runtime()
     logger.success("UNHEDGED FULL AUTO STARTED")
     state = BotState()
-    strategy = Strategy(state)
-    feed = MarketFeed()
+    strategy = build_strategy(state)
+    feed = MarketFeed(strategy)
     executor = LiveExecutionAdapter()
     latest_markets = {}
     state.set_balances(
@@ -577,12 +578,12 @@ def main() -> None:
         state.add_event(f"Restored pending settlement: {summary} | {question}")
     persist_pending_bets(state)
 
-    with Live(build_lines(latest_markets, state), console=console, auto_refresh=False, screen=True) as live:
+    with Live(build_lines(latest_markets, state, strategy), console=console, auto_refresh=False, screen=True) as live:
         for market in feed.stream():
             if market.timer_left <= 0 and state.was_market_closed(market.slug, market.market_id):
                 latest_markets.pop(market.slug, None)
                 feed.drop_market(market.slug)
-                live.update(build_lines(latest_markets, state), refresh=True)
+                live.update(build_lines(latest_markets, state, strategy), refresh=True)
                 continue
 
             latest_markets[market.slug] = market
@@ -608,12 +609,33 @@ def main() -> None:
                     state.current_balance,
                     restored=True,
                 )
-            freeze_segment_metrics(state, market)
+            freeze_segment_metrics(state, strategy, market)
 
             signal = strategy.evaluate(market)
 
             if signal:
-                placed_bets = executor.execute(signal)
+                try:
+                    placed_bets = executor.execute(signal)
+                except BetExecutionError as exc:
+                    logger.warning("Signal execution failed: %s", exc)
+                    if not exc.retryable:
+                        state.block_round_execution(
+                            market.slug,
+                            "API REJECTED",
+                            segment_count=strategy.segment_count,
+                        )
+                    state.add_event(
+                        f"{market.symbol} bet failed | {signal.side} | {exc}"
+                    )
+                    live.update(build_lines(latest_markets, state, strategy), refresh=True)
+                    continue
+
+                state.mark_signal_sent(
+                    market.slug,
+                    signal.side,
+                    segment_count=strategy.segment_count,
+                )
+                state.record_signal(signal)
                 summary = executor.summarize_bets(signal, placed_bets)
                 state.record_bet(market.slug, summary)
                 state.restore_pending_bet(market.market_id, summary)
@@ -633,7 +655,7 @@ def main() -> None:
                     f"estimasi: YES {estimate_resolution_outcomes(market, summary)[0]} | NO {estimate_resolution_outcomes(market, summary)[1]}",
                     f"delta: {format_delta(signal.delta)}",
                 )
-                round_state = state.get_or_create(market.slug)
+                round_state = state.get_or_create(market.slug, strategy.segment_count)
                 if not round_state.pending_settlement_logged:
                     state.add_event(build_pending_event_message(market, summary))
                     state.mark_pending_details_logged(market.market_id)
@@ -643,7 +665,6 @@ def main() -> None:
                 export_signal_history(state.recent_activity, config.SIGNAL_HISTORY_PATH)
 
             if market.timer_left <= 0:
-                last_bet = state.get_last_bet(market.slug)
                 state.add_event(f"{market.symbol} round completed")
                 state.mark_closed_market(market.slug, market.market_id)
                 state.reset_round(market.slug)
@@ -656,7 +677,7 @@ def main() -> None:
                     logger.exception("Failed to refresh market ids after round completion.")
                 export_signal_history(state.recent_activity, config.SIGNAL_HISTORY_PATH)
 
-            live.update(build_lines(latest_markets, state), refresh=True)
+            live.update(build_lines(latest_markets, state, strategy), refresh=True)
 
 
 if __name__ == "__main__":
